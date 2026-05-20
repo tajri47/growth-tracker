@@ -4,7 +4,7 @@
   "scripts": {
     "dev": "pnpm --parallel -r run dev",
     "build": "pnpm -r run build",
-    "prestart": "[ -f packages/server/.env ] || cp .env.example packages/server/.env",
+    "prestart": "node -e \"const fs=require('fs');if(!fs.existsSync('packages/server/.env'))fs.copyFileSync('.env.example','packages/server/.env')\"",
     "start": "docker compose up -d && wait-on tcp:localhost:5432 && pnpm db:migrate && pnpm dev",
     "db:migrate": "pnpm --filter @growth-tracker/server exec prisma migrate dev --name init",
     "docker:up": "docker compose up -d",
