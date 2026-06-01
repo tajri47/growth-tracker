@@ -1,6 +1,19 @@
 import type { FormEvent } from 'react';
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ChevronDown } from 'lucide-react';
+import { AuthFooterLink, AuthShell } from '@/components/auth/AuthShell';
+import { Field, fieldInputClassName } from '@/components/auth/Field';
+import { PasswordRules } from '@/components/auth/PasswordRules';
+import { Button } from '@/components/ui/button';
+import { useDebouncedFieldValidation } from '@/hooks/useDebouncedFieldValidation';
+import {
+  buildDayOptions,
+  isPasswordValid,
+  validateBirthdate,
+  validateEmail,
+} from '@/lib/validation';
+import { cn } from '@/lib/utils';
 
 type Role = 'LEARNER' | 'MANAGER';
 type ExperienceLevel = 'JUNIOR' | 'MID' | 'SENIOR';
@@ -16,6 +29,21 @@ interface AddressFormItem {
 }
 
 const DEPARTMENTS = ['Engineering', 'Product', 'Design', 'Marketing', 'Operations', 'HR', 'Other'] as const;
+
+const MONTH_LABELS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+] as const;
 
 const EXPERIENCE_OPTIONS: Array<{ value: ExperienceLevel; label: string; description: string; testId: string }> = [
   { value: 'JUNIOR', label: 'Junior', description: 'Early career and building strong fundamentals.', testId: 'experience-junior' },
@@ -53,13 +81,21 @@ function Signup() {
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const passwordRules = useMemo(
-    () => ({
-      length: password.length >= 8,
-      upper: /[A-Z]/.test(password),
-      special: /[^A-Za-z0-9]/.test(password),
-    }),
-    [password],
+  const emailValidation = useDebouncedFieldValidation(email, validateEmail);
+  const passwordValidation = useDebouncedFieldValidation(password, (value) =>
+    isPasswordValid(value) ? undefined : 'Password must meet all requirements below',
+  );
+  const teamNameValidation = useDebouncedFieldValidation(teamName, (value) => {
+    if (role !== 'MANAGER') return undefined;
+    if (!value.trim()) return 'Team name is required for managers';
+    return undefined;
+  });
+  const departmentValidation = useDebouncedFieldValidation(department, (value) =>
+    value ? undefined : 'Select a department',
+  );
+  const birthdateValidation = useDebouncedFieldValidation(
+    { birthYear, birthMonth, birthDay },
+    ({ birthYear: y, birthMonth: m, birthDay: d }) => validateBirthdate(y, m, d),
   );
 
   const years = useMemo(() => {
@@ -72,17 +108,36 @@ function Signup() {
   }, [currentYear]);
 
   const months = useMemo(
-    () => Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, '0')),
+    () =>
+      MONTH_LABELS.map((label, index) => ({
+        label,
+        value: String(index + 1).padStart(2, '0'),
+      })),
     [],
   );
 
-  const days = useMemo(() => Array.from({ length: 31 }, (_, index) => String(index + 1).padStart(2, '0')), []);
+  const days = useMemo(() => buildDayOptions(birthYear, birthMonth), [birthYear, birthMonth]);
+
+  useEffect(() => {
+    if (!birthDay) return;
+    if (!days.includes(birthDay)) {
+      setBirthDay('');
+    }
+  }, [birthDay, days]);
 
   function changeRole(nextRole: Role) {
     setRole(nextRole);
     if (nextRole === 'LEARNER') {
       setTeamName('');
     }
+  }
+
+  function handleBirthYearChange(value: string) {
+    setBirthYear(value);
+  }
+
+  function handleBirthMonthChange(value: string) {
+    setBirthMonth(value);
   }
 
   function addAddress() {
@@ -103,9 +158,29 @@ function Signup() {
     setAddresses((prev) => prev.map((item) => (item.id === addressId ? { ...item, [field]: value } : item)));
   }
 
+  const validateAllOnSubmit = useCallback(() => {
+    emailValidation.onBlur();
+    passwordValidation.onBlur();
+    departmentValidation.onBlur();
+    birthdateValidation.onBlur();
+    if (role === 'MANAGER') teamNameValidation.onBlur();
+  }, [birthdateValidation, departmentValidation, emailValidation, passwordValidation, role, teamNameValidation]);
+
   async function submitSignup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError('');
+    validateAllOnSubmit();
+
+    if (
+      validateEmail(email) ||
+      !isPasswordValid(password) ||
+      !department ||
+      validateBirthdate(birthYear, birthMonth, birthDay) ||
+      (role === 'MANAGER' && !teamName.trim())
+    ) {
+      return;
+    }
+
     setIsSubmitting(true);
 
     const payload = {
@@ -153,80 +228,60 @@ function Signup() {
   const submitDisabled =
     isSubmitting ||
     !email.trim() ||
-    !password ||
+    !isPasswordValid(password) ||
     !department ||
     !birthYear ||
     !birthMonth ||
     !birthDay ||
+    Boolean(validateBirthdate(birthYear, birthMonth, birthDay)) ||
     (role === 'MANAGER' && !teamName.trim());
 
-  return (
-    <div className="w-full max-w-4xl mx-auto bg-white border border-neutral-200 rounded-xl shadow-sm p-6 md:p-8 max-h-[95vh] overflow-y-auto">
-      <h1 className="font-semibold text-2xl text-neutral-900">Create your account</h1>
-      <p className="text-sm text-neutral-600 mt-1">Set up your profile to start tracking growth.</p>
+  const selectClassName = (isInvalid: boolean) =>
+    cn(fieldInputClassName(isInvalid), 'bg-background');
 
-      <form className="mt-6 space-y-6" data-testid="signup-form" onSubmit={submitSignup}>
+  return (
+    <AuthShell
+      className="max-w-4xl max-h-[95vh] overflow-y-auto"
+      title="Create your account"
+      description="Set up your profile to start tracking growth."
+      footer={<AuthFooterLink prompt="Already have an account?" linkText="Log in" to="/login" />}
+    >
+      <form className="mt-8 space-y-8" data-testid="signup-form" onSubmit={submitSignup} noValidate>
         <section className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-neutral-800 mb-1" htmlFor="signup-email">
-              Email
-            </label>
+          <Field id="signup-email" label="Email" error={emailValidation.error}>
             <input
               id="signup-email"
               data-testid="email-input"
               type="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
+              onBlur={emailValidation.onBlur}
               autoComplete="email"
-              required
-              className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400"
+              aria-invalid={emailValidation.isInvalid}
+              className={fieldInputClassName(emailValidation.isInvalid)}
             />
-          </div>
+          </Field>
 
-          <div>
-            <label className="block text-sm font-medium text-neutral-800 mb-1" htmlFor="signup-password">
-              Password
-            </label>
+          <Field id="signup-password" label="Password" error={passwordValidation.error}>
             <input
               id="signup-password"
               data-testid="password-input"
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
+              onBlur={passwordValidation.onBlur}
               autoComplete="new-password"
-              required
-              className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400"
+              aria-invalid={passwordValidation.isInvalid}
+              className={fieldInputClassName(passwordValidation.isInvalid)}
             />
-            <ul className="mt-2 text-sm space-y-1">
-              <li
-                data-testid="password-rule-length"
-                data-met={String(passwordRules.length)}
-                className={passwordRules.length ? 'text-emerald-700' : 'text-neutral-500'}
-              >
-                At least 8 characters
-              </li>
-              <li
-                data-testid="password-rule-upper"
-                data-met={String(passwordRules.upper)}
-                className={passwordRules.upper ? 'text-emerald-700' : 'text-neutral-500'}
-              >
-                At least one capital letter
-              </li>
-              <li
-                data-testid="password-rule-special"
-                data-met={String(passwordRules.special)}
-                className={passwordRules.special ? 'text-emerald-700' : 'text-neutral-500'}
-              >
-                At least one special character
-              </li>
-            </ul>
-          </div>
+            <PasswordRules password={password} />
+          </Field>
         </section>
 
         <section className="space-y-4">
-          <p className="text-sm font-medium text-neutral-800">Role</p>
+          <p className="text-sm font-medium">Role</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="cursor-pointer rounded-md border border-neutral-300 px-3 py-2 text-sm has-[:checked]:border-neutral-900 has-[:checked]:bg-neutral-100">
+            <label className="cursor-pointer rounded-lg border border-input px-3 py-2.5 text-sm transition-colors has-[:checked]:border-primary has-[:checked]:bg-muted">
               <input
                 data-testid="role-learner"
                 className="sr-only"
@@ -238,7 +293,7 @@ function Signup() {
               />
               Learner
             </label>
-            <label className="cursor-pointer rounded-md border border-neutral-300 px-3 py-2 text-sm has-[:checked]:border-neutral-900 has-[:checked]:bg-neutral-100">
+            <label className="cursor-pointer rounded-lg border border-input px-3 py-2.5 text-sm transition-colors has-[:checked]:border-primary has-[:checked]:bg-muted">
               <input
                 data-testid="role-manager"
                 className="sr-only"
@@ -253,35 +308,31 @@ function Signup() {
           </div>
 
           {role === 'MANAGER' && (
-            <div>
-              <label className="block text-sm font-medium text-neutral-800 mb-1" htmlFor="team-name">
-                Team name
-              </label>
+            <Field id="team-name" label="Team name" error={teamNameValidation.error}>
               <input
                 id="team-name"
                 data-testid="team-name-input"
                 type="text"
                 value={teamName}
                 onChange={(event) => setTeamName(event.target.value)}
-                className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400"
-                required
+                onBlur={teamNameValidation.onBlur}
+                aria-invalid={teamNameValidation.isInvalid}
+                className={fieldInputClassName(teamNameValidation.isInvalid)}
               />
-            </div>
+            </Field>
           )}
         </section>
 
-        <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-neutral-800 mb-1" htmlFor="department">
-              Department
-            </label>
+        <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <Field id="department" label="Department" error={departmentValidation.error}>
             <select
               id="department"
               data-testid="department-select"
               value={department}
               onChange={(event) => setDepartment(event.target.value)}
-              className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-neutral-400"
-              required
+              onBlur={departmentValidation.onBlur}
+              aria-invalid={departmentValidation.isInvalid}
+              className={selectClassName(departmentValidation.isInvalid)}
             >
               <option value="" disabled>
                 Select department
@@ -292,13 +343,16 @@ function Signup() {
                 </option>
               ))}
             </select>
-          </div>
+          </Field>
 
           <div>
-            <p className="block text-sm font-medium text-neutral-800 mb-1">Experience level</p>
+            <p className="text-sm font-medium mb-2">Experience level</p>
             <div className="space-y-2">
               {EXPERIENCE_OPTIONS.map((item) => (
-                <label key={item.value} className="block rounded-md border border-neutral-300 px-3 py-2 cursor-pointer has-[:checked]:border-neutral-900 has-[:checked]:bg-neutral-100">
+                <label
+                  key={item.value}
+                  className="block rounded-lg border border-input px-3 py-2.5 cursor-pointer transition-colors has-[:checked]:border-primary has-[:checked]:bg-muted"
+                >
                   <input
                     data-testid={item.testId}
                     className="sr-only"
@@ -308,18 +362,15 @@ function Signup() {
                     checked={experienceLevel === item.value}
                     onChange={() => setExperienceLevel(item.value)}
                   />
-                  <div className="text-sm font-medium text-neutral-900">{item.label}</div>
-                  <div className="text-xs text-neutral-600">{item.description}</div>
+                  <div className="text-sm font-medium">{item.label}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{item.description}</div>
                 </label>
               ))}
             </div>
           </div>
         </section>
 
-        <section>
-          <label className="block text-sm font-medium text-neutral-800 mb-1" htmlFor="bio">
-            Bio (optional)
-          </label>
+        <Field id="bio" label="Bio (optional)">
           <textarea
             id="bio"
             data-testid="bio-input"
@@ -327,22 +378,29 @@ function Signup() {
             onChange={(event) => setBio(event.target.value)}
             maxLength={250}
             rows={4}
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400"
+            className={fieldInputClassName(false)}
           />
-          <p className="text-xs text-neutral-600 mt-1" data-testid="bio-char-count">
+          <p className="text-xs text-muted-foreground mt-1.5" data-testid="bio-char-count">
             {bio.length} / 250
           </p>
-        </section>
+        </Field>
 
-        <section>
-          <p className="text-sm font-medium text-neutral-800 mb-2">Birthdate</p>
-          <div className="grid grid-cols-3 gap-3">
+        <div>
+          <p className="text-sm font-medium mb-2">Birthdate</p>
+          <div
+            className="grid grid-cols-3 gap-3"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                birthdateValidation.onBlur();
+              }
+            }}
+          >
             <select
               data-testid="birthdate-year"
               value={birthYear}
-              onChange={(event) => setBirthYear(event.target.value)}
-              className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-neutral-400"
-              required
+              onChange={(event) => handleBirthYearChange(event.target.value)}
+              aria-invalid={birthdateValidation.isInvalid}
+              className={selectClassName(birthdateValidation.isInvalid)}
             >
               <option value="" disabled>
                 Year
@@ -356,16 +414,16 @@ function Signup() {
             <select
               data-testid="birthdate-month"
               value={birthMonth}
-              onChange={(event) => setBirthMonth(event.target.value)}
-              className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-neutral-400"
-              required
+              onChange={(event) => handleBirthMonthChange(event.target.value)}
+              aria-invalid={birthdateValidation.isInvalid}
+              className={selectClassName(birthdateValidation.isInvalid)}
             >
               <option value="" disabled>
                 Month
               </option>
               {months.map((month) => (
-                <option key={month} value={month}>
-                  {month}
+                <option key={month.value} value={month.value}>
+                  {month.label}
                 </option>
               ))}
             </select>
@@ -373,8 +431,9 @@ function Signup() {
               data-testid="birthdate-day"
               value={birthDay}
               onChange={(event) => setBirthDay(event.target.value)}
-              className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-neutral-400"
-              required
+              disabled={!birthYear || !birthMonth}
+              aria-invalid={birthdateValidation.isInvalid}
+              className={selectClassName(birthdateValidation.isInvalid)}
             >
               <option value="" disabled>
                 Day
@@ -386,36 +445,40 @@ function Signup() {
               ))}
             </select>
           </div>
-        </section>
+          {birthdateValidation.error && (
+            <p className="text-xs text-destructive mt-1.5" role="alert">
+              {birthdateValidation.error}
+            </p>
+          )}
+        </div>
 
         <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-medium text-neutral-800">Addresses (optional)</p>
-            <button
-              data-testid="add-address-btn"
-              type="button"
-              onClick={addAddress}
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-100"
-            >
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-medium">Addresses (optional)</p>
+            <Button data-testid="add-address-btn" type="button" variant="outline" size="sm" onClick={addAddress}>
               Add an address
-            </button>
+            </Button>
           </div>
 
           {addresses.map((address, index) => (
-            <div key={address.id} data-testid="address-group" className="rounded-md border border-neutral-200">
-              <div className="flex items-center justify-between px-3 py-2 bg-neutral-50 border-b border-neutral-200">
+            <div key={address.id} data-testid="address-group" className="rounded-lg border border-border overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2.5 bg-muted/50 border-b border-border">
                 <button
                   type="button"
                   onClick={() => toggleAddress(address.id)}
-                  className="text-sm font-medium text-neutral-800"
+                  className="flex items-center gap-2 text-sm font-medium"
                 >
-                  Address {index + 1} {address.isOpen ? '(-)' : '(+)'}
+                  <ChevronDown
+                    className={cn('size-4 transition-transform', address.isOpen && 'rotate-180')}
+                    aria-hidden
+                  />
+                  Address {index + 1}
                 </button>
                 <button
                   data-testid="remove-address-btn"
                   type="button"
                   onClick={() => removeAddress(address.id)}
-                  className="text-sm text-red-600 hover:text-red-700"
+                  className="text-sm text-destructive hover:text-destructive/80"
                 >
                   Remove
                 </button>
@@ -428,7 +491,7 @@ function Signup() {
                   placeholder="Label (e.g. Home)"
                   value={address.label}
                   onChange={(event) => updateAddress(address.id, 'label', event.target.value)}
-                  className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400"
+                  className={fieldInputClassName(false)}
                 />
                 <input
                   data-testid="address-street1-input"
@@ -436,14 +499,14 @@ function Signup() {
                   placeholder="Street 1"
                   value={address.street1}
                   onChange={(event) => updateAddress(address.id, 'street1', event.target.value)}
-                  className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400"
+                  className={fieldInputClassName(false)}
                 />
                 <input
                   type="text"
                   placeholder="Street 2 (optional)"
                   value={address.street2}
                   onChange={(event) => updateAddress(address.id, 'street2', event.target.value)}
-                  className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400"
+                  className={fieldInputClassName(false)}
                 />
                 <input
                   data-testid="address-city-input"
@@ -451,7 +514,7 @@ function Signup() {
                   placeholder="City"
                   value={address.city}
                   onChange={(event) => updateAddress(address.id, 'city', event.target.value)}
-                  className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400"
+                  className={fieldInputClassName(false)}
                 />
                 <input
                   data-testid="address-zip-input"
@@ -459,7 +522,7 @@ function Signup() {
                   placeholder="ZIP code"
                   value={address.zipCode}
                   onChange={(event) => updateAddress(address.id, 'zipCode', event.target.value)}
-                  className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400"
+                  className={fieldInputClassName(false)}
                 />
               </div>
             </div>
@@ -467,21 +530,16 @@ function Signup() {
         </section>
 
         {error && (
-          <p data-testid="error-message" className="text-sm text-red-600">
+          <p data-testid="error-message" className="text-sm text-destructive" role="alert">
             {error}
           </p>
         )}
 
-        <button
-          data-testid="submit-btn"
-          type="submit"
-          disabled={submitDisabled}
-          className="w-full rounded-md bg-neutral-900 text-white py-2.5 text-sm font-medium hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
-        >
+        <Button data-testid="submit-btn" type="submit" disabled={submitDisabled} className="w-full" size="lg">
           {isSubmitting ? 'Creating account...' : 'Create account'}
-        </button>
+        </Button>
       </form>
-    </div>
+    </AuthShell>
   );
 }
 
